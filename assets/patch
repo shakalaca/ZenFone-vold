@@ -650,3 +650,15 @@ index 14f1509..24ac898 100644
      int fd;
      char nodepath[255];
      int written = snprintf(nodepath,
+diff --git a/main.cpp b/main.cpp
+index d4b7d28..6108f43 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -185,6 +185,7 @@ static int process_config(VolumeManager *vm)
+             if (fs_mgr_is_noemulatedsd(&fstab->recs[i]) &&
+                 !strcmp(fstab->recs[i].fs_type, "vfat")) {
+                 flags |= VOL_PROVIDES_ASEC;
++                property_set("ro.bsp.app2sd", "true");
+             }
+             dv = new DirectVolume(vm, &(fstab->recs[i]), flags);
+ 
