@@ -1,0 +1,23 @@
+#!/system/bin/sh
+
+VOLD=/system/bin/vold
+VOLD_ORIG=${VOLD}.orig
+VOLD_XXX=${VOLD}.xxx
+
+mount -o rw,remount /system
+
+if [ -f $VOLD_ORIG ]; then
+  if [ -f $VOLD_XXX ]; then
+    rm $VOLD_XXX
+  fi
+  mv $VOLD $VOLD_XXX
+else
+  mv $VOLD $VOLD_ORIG
+fi
+
+cp /data/local/tmp/vold $VOLD
+chmod 755 $VOLD
+chown root:shell $VOLD
+chcon u:object_r:vold_exec:s0 $VOLD
+
+mount -o ro,remount /system
