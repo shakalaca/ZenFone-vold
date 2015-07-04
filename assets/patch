@@ -651,10 +651,18 @@ index 14f1509..24ac898 100644
      char nodepath[255];
      int written = snprintf(nodepath,
 diff --git a/main.cpp b/main.cpp
-index d4b7d28..6108f43 100644
+index d4b7d28..fac8a77 100644
 --- a/main.cpp
 +++ b/main.cpp
-@@ -185,6 +185,7 @@ static int process_config(VolumeManager *vm)
+@@ -20,6 +20,7 @@
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <ctype.h>
+ 
+ #include <fcntl.h>
+ #include <dirent.h>
+@@ -185,6 +186,7 @@ static int process_config(VolumeManager *vm)
              if (fs_mgr_is_noemulatedsd(&fstab->recs[i]) &&
                  !strcmp(fstab->recs[i].fs_type, "vfat")) {
                  flags |= VOL_PROVIDES_ASEC;
@@ -662,3 +670,16 @@ index d4b7d28..6108f43 100644
              }
              dv = new DirectVolume(vm, &(fstab->recs[i]), flags);
  
+@@ -194,6 +196,12 @@ static int process_config(VolumeManager *vm)
+                 goto out_fail;
+             }
+ 
++            snprintf(propbuf, sizeof(propbuf), "ro.epad.mount_point.%s", dv->getLabel());
++            for (int i = 0; propbuf[i]; i++) {
++                propbuf[i] = tolower(propbuf[i]);
++            }
++            property_set(propbuf, dv->getFuseMountpoint());
++
+             vm->addVolume(dv);
+         }
+     }
