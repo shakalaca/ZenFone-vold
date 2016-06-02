@@ -20,4 +20,20 @@ chmod 755 $VOLD
 chown root:shell $VOLD
 chcon u:object_r:vold_exec:s0 $VOLD
 
+LIBBLKID=/system/lib/libext2_blkid.so
+LIBBLKID_ORIG=${LIBBLKID}.orig
+LIBBLKID_XXX=${LIBBLKID}.xxx
+
+if [ -f $LIBBLKID_ORIG ]; then
+  if [ -f $LIBBLKID_XXX ]; then
+    rm $LIBBLKID_XXX
+  fi
+  mv $LIBBLKID $LIBBLKID_XXX
+else
+  mv $LIBBLKID $LIBBLKID_ORIG
+fi
+
+cp /data/local/tmp/libext2_blkid.so $LIBBLKID
+chmod 644 $LIBBLKID
+
 mount -o ro,remount /system

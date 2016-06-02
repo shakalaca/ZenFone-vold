@@ -287,6 +287,217 @@ index 5e0df74..7172599 100644
  
  };
  
+diff --git a/Exfat.cpp b/Exfat.cpp
+new file mode 100644
+index 0000000..da7fec5
+--- /dev/null
++++ b/Exfat.cpp
+@@ -0,0 +1,169 @@
++/*
++ * Copyright (C) 2012 The Android Open Source Project
++ * Copyright (C) 2013 The CyanogenMod Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <string.h>
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/mman.h>
++#include <sys/mount.h>
++#include <sys/wait.h>
++
++#include <linux/kdev_t.h>
++#include <logwrap/logwrap.h>
++#include "VoldUtil.h"
++
++#define LOG_TAG "Vold"
++
++#include <cutils/log.h>
++#include <cutils/properties.h>
++
++#include "Exfat.h"
++
++static char EXFAT_FSCK[] = "/system/bin/fsck.exfat";
++static char EXFAT_MKFS[] = "/system/bin/mkexfat";
++static char EXFAT_MOUNT[] = "/system/bin/mount";
++
++int Exfat::doMount(const char *fsPath, const char *mountPoint,
++                 bool ro, bool remount, bool executable,
++                 int ownerUid, int ownerGid, int permMask) {
++
++    int rc = -1;
++    char mountData[255];
++    const char *args[8];
++    int status;
++
++    if (access(EXFAT_MOUNT, X_OK)) {
++        SLOGE("Unable to mount, exFAT FUSE helper not found!");
++        return rc;
++    }
++
++    sprintf(mountData,
++            "noatime,nodev,nosuid,dirsync,uid=%d,gid=%d,fmask=%o,dmask=%o,%s,%s",
++            ownerUid, ownerGid, permMask, permMask,
++            (executable ? "exec" : "noexec"),
++            (ro ? "ro" : "rw"));
++
++    args[0] = EXFAT_MOUNT;
++    args[1] = "-t";
++    args[2] = "texfat";
++    args[3] = "-o";
++    args[4] = mountData;
++    args[5] = fsPath;
++    args[6] = mountPoint;
++    args[7] = NULL;
++
++    SLOGW("Executing exFAT mount (%s) -> (%s)", fsPath, mountPoint);
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++    if (rc && errno == EROFS) {
++        SLOGE("%s appears to be a read only filesystem - retrying mount RO", fsPath);
++        strcat(mountData, ",ro");
++        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++    }
++
++    return rc;
++}
++
++int Exfat::check(const char *fsPath) {
++
++    bool rw = true;
++    int rc = -1;
++    int status;
++
++    if (access(EXFAT_FSCK, X_OK)) {
++        SLOGW("Skipping fs checks, exfatfsck not found.\n");
++        return 0;
++    }
++
++    do {
++        const char *args[3];
++        args[0] = EXFAT_FSCK;
++        args[1] = fsPath;
++        args[2] = NULL;
++
++        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++        switch(rc) {
++        case 0:
++            SLOGI("exFAT filesystem check completed OK.\n");
++            return 0;
++        case 1:
++            SLOGI("exFAT filesystem check completed, errors corrected OK.\n");
++            return 0;
++        case 2:
++            SLOGE("exFAT filesystem check completed, errors corrected, need reboot.\n");
++            return 0;
++        case 4:
++            SLOGE("exFAT filesystem errors left uncorrected.\n");
++            return 0;
++        case 8:
++            SLOGE("exfatfsck operational error.\n");
++            errno = EIO;
++            return -1;
++        default:
++            SLOGE("exFAT filesystem check failed (unknown exit code %d).\n", rc);
++            errno = EIO;
++            return -1;
++        }
++    } while (0);
++
++    return 0;
++}
++
++int Exfat::format(const char *fsPath) {
++
++    int fd;
++    const char *args[3];
++    int rc = -1;
++    int status;
++
++    if (access(EXFAT_MKFS, X_OK)) {
++        SLOGE("Unable to format, mkexfatfs not found.");
++        return -1;
++    }
++
++    args[0] = EXFAT_MKFS;
++    args[1] = fsPath;
++    args[2] = NULL;
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++    if (rc == 0) {
++        SLOGI("Filesystem (exFAT) formatted OK");
++        return 0;
++    } else {
++        SLOGE("Format (exFAT) failed (unknown exit code %d)", rc);
++        errno = EIO;
++        return -1;
++    }
++    return 0;
++}
+diff --git a/Exfat.h b/Exfat.h
+new file mode 100644
+index 0000000..94c1d05
+--- /dev/null
++++ b/Exfat.h
+@@ -0,0 +1,30 @@
++/*
++ * Copyright (C) 2013 The CyanogenMod Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef _EXFAT_H
++#define _EXFAT_H
++
++#include <unistd.h>
++
++class Exfat {
++public:
++    static int doMount(const char *fsPath, const char *mountPoint, bool ro, bool remount,
++            bool executable, int ownerUid, int ownerGid, int permMask);
++    static int check(const char *fsPath);
++    static int format(const char *fsPath);
++};
++
++#endif
 diff --git a/Ext4.cpp b/Ext4.cpp
 index dc31fd0..878f9cd 100644
 --- a/Ext4.cpp
@@ -369,35 +580,255 @@ index c768f5a..5b01a53 100644
      static int format(const char *fsPath, unsigned int numSectors, const char *mountpoint);
      static int resize(const char *fsPath, unsigned int numSectors);
  };
-diff --git a/VoldUtil.h b/VoldUtil.h
-index 469489a..c2cf9ca 100644
---- a/VoldUtil.h
-+++ b/VoldUtil.h
-@@ -19,6 +19,10 @@
- 
- #include <sys/cdefs.h>
- 
-+#ifndef HELPER_PATH
-+#define HELPER_PATH "/system/bin/"
-+#endif
+diff --git a/Ntfs.cpp b/Ntfs.cpp
+new file mode 100644
+index 0000000..472e2f5
+--- /dev/null
++++ b/Ntfs.cpp
+@@ -0,0 +1,199 @@
++/*
++ * Copyright (C) 2008 The Android Open Source Project
++ * Copyright (C) 2012 Freescale Semiconductor, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
 +
- #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
- 
- __BEGIN_DECLS
++#include <stdio.h>
++#include <stdlib.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <string.h>
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/mman.h>
++#include <sys/mount.h>
++
++#include <linux/kdev_t.h>
++#include <linux/fs.h>
++#include <logwrap/logwrap.h>
++#include "VoldUtil.h"
++
++#define LOG_TAG "Vold"
++
++#include <cutils/log.h>
++#include <cutils/properties.h>
++
++#include "Ntfs.h"
++
++static char NTFS_FIX_PATH[] = "/system/bin/ntfsck";
++static char NTFS_MOUNT_PATH[] = "/system/bin/mount";
++static char MKNTFS_PATH[] = "/system/bin/mkntfs";
++
++int Ntfs::check(const char *fsPath) {
++
++    if (access(NTFS_FIX_PATH, X_OK)) {
++        SLOGW("Skipping fs checks\n");
++        return 0;
++    }
++
++    int rc = 0;
++    int status;
++    const char *args[4];
++    /* we first use -n to do ntfs detection */
++    args[0] = NTFS_FIX_PATH;
++    args[1] = "-n";
++    args[2] = fsPath;
++    args[3] = NULL;
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++    if (rc) {
++        errno = ENODATA;
++        return -1;
++    }
++
++    SLOGI("Ntfs filesystem existed");
++
++    /* do the real fix */
++    /* redo the ntfsfix without -n to fix problems */
++    args[1] = fsPath;
++    args[2] = NULL;
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++    if (rc) {
++        errno = EIO;
++        SLOGE("Filesystem check failed (unknown exit code %d)", rc);
++        return -1;
++    }
++
++    SLOGI("Ntfs filesystem check completed OK");
++    return 0;
++}
++
++int Ntfs::doMount(const char *fsPath, const char *mountPoint,
++                 bool ro, bool remount, bool executable,
++                 int ownerUid, int ownerGid, int permMask, bool createLost) {
++    int rc;
++    char mountData[255];
++    const char *args[8];
++    int status;
++
++    /*
++     * Note: This is a temporary hack. If the sampling profiler is enabled,
++     * we make the SD card world-writable so any process can write snapshots.
++     *
++     * TODO: Remove this code once we have a drop box in system_server.
++     */
++    char value[PROPERTY_VALUE_MAX];
++    property_get("persist.sampling_profiler", value, "");
++    if (value[0] == '1') {
++        SLOGW("The SD card is world-writable because the"
++            " 'persist.sampling_profiler' system property is set to '1'.");
++        permMask = 0;
++    }
++
++    sprintf(mountData,
++            "nls=utf8,uid=%d,gid=%d,fmask=%o,dmask=%o,"
++	    "nosuid,nodev,noatime",
++            ownerUid, ownerGid, permMask, permMask);
++
++    if (!executable)
++        strcat(mountData, ",noexec");
++    if (ro)
++        strcat(mountData, ",ro");
++    if (remount)
++        strcat(mountData, ",remount");
++
++    SLOGD("Mounting ntfs with options:%s\n", mountData);
++
++    args[0] = NTFS_MOUNT_PATH;
++    args[1] = "-t";
++    args[2] = "tntfs";
++    args[3] = "-o";
++    args[4] = mountData;
++    args[5] = fsPath;
++    args[6] = mountPoint;
++    args[7] = NULL;
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++    if (rc && errno == EROFS) {
++        SLOGE("%s appears to be a read only filesystem - retrying mount RO", fsPath);
++        strcat(mountData, ",ro");
++        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++    }
++
++    if (rc == 0 && createLost) {
++        char *lost_path;
++        asprintf(&lost_path, "%s/LOST.DIR", mountPoint);
++        if (access(lost_path, F_OK)) {
++            /*
++             * Create a LOST.DIR in the root so we have somewhere to put
++             * lost cluster chains (fsck_msdos doesn't currently do this)
++             */
++            if (mkdir(lost_path, 0755)) {
++                SLOGE("Unable to create LOST.DIR (%s)", strerror(errno));
++            }
++        }
++        free(lost_path);
++    }
++
++    return rc;
++}
++
++int Ntfs::format(const char *fsPath, bool wipe) {
++
++    const char *args[4];
++    int rc = -1;
++    int status;
++
++    if (access(MKNTFS_PATH, X_OK)) {
++        SLOGE("Unable to format, mkntfs not found.");
++        return -1;
++    }
++
++    args[0] = MKNTFS_PATH;
++    if (wipe) {
++        args[1] = fsPath;
++        args[2] = NULL;
++    } else {
++        args[1] = "-f";
++        args[2] = fsPath;
++        args[3] = NULL;
++    }
++
++    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
++            true);
++
++    if (rc == 0) {
++        SLOGI("Filesystem (NTFS) formatted OK");
++        return 0;
++    } else {
++        SLOGE("Format (NTFS) failed (unknown exit code %d)", rc);
++        errno = EIO;
++        return -1;
++    }
++    return 0;
++}
+diff --git a/Ntfs.h b/Ntfs.h
+new file mode 100644
+index 0000000..92a8a64
+--- /dev/null
++++ b/Ntfs.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (C) 2008 The Android Open Source Project
++ * Copyright (C) 2012 Freescale Semiconductor, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef _NTFS_H
++#define _NTFS_H
++
++#include <unistd.h>
++
++class Ntfs {
++public:
++    static int check(const char *fsPath);
++    static int doMount(const char *fsPath, const char *mountPoint,
++                       bool ro, bool remount, bool executable,
++                       int ownerUid, int ownerGid, int permMask,
++                       bool createLost);
++    static int format(const char *fsPath, bool wipe);
++};
++
++#endif
 diff --git a/Volume.cpp b/Volume.cpp
-index ca56d1c..403fff1 100644
+index ca56d1c..3b3e38e 100644
 --- a/Volume.cpp
 +++ b/Volume.cpp
-@@ -35,6 +35,8 @@
- 
- #include <private/android_filesystem_config.h>
- 
-+#include <blkid/blkid.h>
-+
- #define LOG_TAG "Vold"
- 
- #include <cutils/fs.h>
-@@ -45,9 +47,13 @@
+@@ -45,7 +45,10 @@
  #include "Volume.h"
  #include "VolumeManager.h"
  #include "ResponseCode.h"
@@ -407,47 +838,49 @@ index ca56d1c..403fff1 100644
 +#include "Ntfs.h"
  #include "Process.h"
  #include "cryptfs.h"
-+#include "VoldUtil.h"
  
- extern "C" void dos_partition_dec(void const *pp, struct dos_partition *d);
- extern "C" void dos_partition_enc(void *pp, struct dos_partition *d);
-@@ -141,6 +147,22 @@ dev_t Volume::getShareDevice() {
-     return getDiskDevice();
+@@ -116,6 +119,7 @@ Volume::Volume(VolumeManager *vm, const fstab_rec* rec, int flags) {
+     mLabel = strdup(rec->label);
+     mUuid = NULL;
+     mUserLabel = NULL;
++    mType = NULL;
+     mState = Volume::State_Init;
+     mFlags = flags;
+     mCurrentlyMountedKdev = -1;
+@@ -127,6 +131,7 @@ Volume::~Volume() {
+     free(mLabel);
+     free(mUuid);
+     free(mUserLabel);
++    free(mType);
  }
  
-+char *getFsType(const char * devicePath) {
-+    char *fstype = NULL;
+ void Volume::setDebug(bool enable) {
+@@ -192,6 +197,20 @@ void Volume::setUserLabel(const char* userLabel) {
+             msg, false);
+ }
+ 
++void Volume::setType(const char* type) {
++    char msg[256];
 +
-+    SLOGD("Trying to get filesystem type for %s \n", devicePath);
-+
-+    fstype = blkid_get_tag_value(NULL, "TYPE", devicePath);
-+    if (fstype) {
-+        SLOGD("Found %s filesystem on %s\n", fstype, devicePath);
-+    } else {
-+        SLOGE("None or unknown filesystem on %s\n", devicePath);
-+        return NULL;
++    if (mType) {
++        free(mType);
 +    }
 +
-+    return fstype;
++    if (type) {
++        mType = strdup(type);
++    } else {
++        mType = NULL;
++    }
 +}
 +
- void Volume::handleVolumeShared() {
- }
- 
-@@ -231,6 +253,8 @@ int Volume::createDeviceNode(const char *path, int major, int minor) {
- 
- int Volume::formatVol(bool wipe) {
- 
-+    char* fstype = NULL;
-+
-     if (getState() == Volume::State_NoMedia) {
-         errno = ENODEV;
-         return -1;
-@@ -271,16 +295,36 @@ int Volume::formatVol(bool wipe) {
+ void Volume::setState(int state) {
+     char msg[255];
+     int oldState = mState;
+@@ -271,16 +290,34 @@ int Volume::formatVol(bool wipe) {
      sprintf(devicePath, "/dev/block/vold/%d:%d",
              major(partNode), minor(partNode));
  
-+    fstype = getFsType((const char*)devicePath);
++    extractMetadata(devicePath);
 +
 +#ifdef VOLD_EMMC_SHARES_DEV_MAJOR
 +    // If emmc and sdcard share dev major number, vold may pick
@@ -460,59 +893,48 @@ index ca56d1c..403fff1 100644
 +
      if (mDebug) {
 -        SLOGI("Formatting volume %s (%s)", getLabel(), devicePath);
-+        SLOGI("Formatting volume %s (%s) as %s", getLabel(), devicePath, fstype);
++        SLOGI("Formatting volume %s (%s) as %s", getLabel(), devicePath, mType);
      }
  
 -    if (Fat::format(devicePath, 0, wipe)) {
-+    if (strcmp(fstype, "ext4") == 0) {
+-        SLOGE("Failed to format (%s)", strerror(errno));
+-        goto err;
++    if (strcmp(mType, "ext4") == 0) {
 +        ret = Ext4::format(devicePath, 0, NULL);
-+    } else if (strcmp(fstype, "exfat") == 0) {
++    } else if (strcmp(mType, "exfat") == 0) {
 +        ret = Exfat::format(devicePath);
-+    } else if (strcmp(fstype, "ntfs") == 0) {
++    } else if (strcmp(mType, "ntfs") == 0) {
 +        ret = Ntfs::format(devicePath, wipe);
 +    } else {
 +        ret = Fat::format(devicePath, 0, wipe);
-+    }
-+
-+    if (ret < 0) {
-         SLOGE("Failed to format (%s)", strerror(errno));
--        goto err;
      }
  
 -    ret = 0;
-+    free(fstype);
++    if (ret < 0) {
++        SLOGE("Failed to format (%s)", strerror(errno));
++    }
  
  err:
      setState(Volume::State_Idle);
-@@ -414,6 +458,7 @@ int Volume::mountVol() {
- 
-     for (i = 0; i < n; i++) {
-         char devicePath[255];
-+        char *fstype = NULL;
- 
-         sprintf(devicePath, "/dev/block/vold/%d:%d", major(deviceNodes[i]),
-                 minor(deviceNodes[i]));
-@@ -423,25 +468,101 @@ int Volume::mountVol() {
+@@ -423,29 +460,77 @@ int Volume::mountVol() {
          errno = 0;
          setState(Volume::State_Checking);
  
 -        if (Fat::check(devicePath)) {
 -            if (errno == ENODATA) {
 -                SLOGW("%s does not contain a FAT filesystem\n", devicePath);
+-                continue;
++        extractMetadata(devicePath);
 +        errno = 0;
-+        int gid;
 +
-+        fstype = getFsType((const char *)devicePath);
-+
-+        if (fstype != NULL) {
-+            if (strcmp(fstype, "vfat") == 0) {
++        if (mType != NULL) {
++            if (strcmp(mType, "vfat") == 0) {
 +
 +                if (Fat::check(devicePath)) {
 +                    errno = EIO;
 +                    /* Badness - abort the mount */
 +                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
 +                    setState(Volume::State_Idle);
-+                    free(fstype);
 +                    return -1;
 +                }
 +
@@ -521,14 +943,13 @@ index ca56d1c..403fff1 100644
 +                    SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
 +                    continue;
 +                }
-+            } else if (strcmp(fstype, "ext4") == 0) {
++            } else if (strcmp(mType, "ext4") == 0) {
 +
 +                if (Ext4::check(devicePath)) {
 +                    errno = EIO;
 +                    /* Badness - abort the mount */
 +                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
 +                    setState(Volume::State_Idle);
-+                    free(fstype);
 +                    return -1;
 +                }
 +
@@ -536,7 +957,7 @@ index ca56d1c..403fff1 100644
 +                    SLOGE("%s failed to mount via EXT4 (%s)\n", devicePath, strerror(errno));
 +                    continue;
 +                }
-+            } else if (strcmp(fstype, "ntfs") == 0) {
++            } else if (strcmp(mType, "ntfs") == 0) {
 +
 +                if (Ntfs::doMount(devicePath, getMountpoint(), false, false, false,
 +                            AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
@@ -544,14 +965,13 @@ index ca56d1c..403fff1 100644
 +                    continue;
 +                }
 +
-+            } else if (strcmp(fstype, "exfat") == 0) {
++            } else if (strcmp(mType, "exfat") == 0) {
 +
 +                if (Exfat::check(devicePath)) {
 +                    errno = EIO;
 +                    /* Badness - abort the mount */
 +                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
 +                    setState(Volume::State_Idle);
-+                    free(fstype);
 +                    return -1;
 +                }
 +
@@ -565,39 +985,19 @@ index ca56d1c..403fff1 100644
 +                // Unsupported filesystem
 +                errno = ENODATA;
 +                setState(Volume::State_Idle);
-+                free(fstype);
 +                return -1;
-+            }
-+
-+            free(fstype);
-+
-+        } else {
-+            if (Exfat::check(devicePath)) {
-+                errno = EIO;
-+                /* Badness - abort the mount */
-+                SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
-+                setState(Volume::State_Idle);
-+                free(fstype);
-+                return -1;
-+            }
-+
-+            if (Exfat::doMount(devicePath, getMountpoint(), false, false, false,
-+                    AID_MEDIA_RW, AID_MEDIA_RW, 0007)) {
-+                SLOGE("%s failed to mount via EXFAT (%s)\n", devicePath, strerror(errno));
-                 continue;
              }
 -            errno = EIO;
 -            /* Badness - abort the mount */
 -            SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
 +
++        } else {
 +            // Unsupported filesystem
-+/*
 +            errno = ENODATA;
              setState(Volume::State_Idle);
-+            free(fstype);
              return -1;
--        }
--
+         }
+ 
 -        errno = 0;
 -        int gid;
 -
@@ -605,15 +1005,64 @@ index ca56d1c..403fff1 100644
 -                AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
 -            SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
 -            continue;
-+            */
+-        }
+-
+-        extractMetadata(devicePath);
+-
+         if (providesAsec && mountAsecExternal() != 0) {
+             SLOGE("Failed to mount secure area (%s)", strerror(errno));
+             umount(getMountpoint());
+@@ -647,6 +732,7 @@ int Volume::initializeMbr(const char *deviceNode) {
+  * Use blkid to extract UUID and label from device, since it handles many
+  * obscure edge cases around partition types and formats. Always broadcasts
+  * updated metadata values.
++ * extract fs type without broadcast about the update.
+  */
+ int Volume::extractMetadata(const char* devicePath) {
+     int res = 0;
+@@ -681,6 +767,13 @@ int Volume::extractMetadata(const char* devicePath) {
+         } else {
+             setUserLabel(NULL);
          }
- 
-         extractMetadata(devicePath);
++
++        start = strstr(line, "TYPE=");
++        if (start != NULL && sscanf(start + 5, "\"%127[^\"]\"", value) == 1) {
++            setType(value);
++        } else {
++            setType(NULL);
++        }
+     } else {
+         ALOGW("blkid failed to identify %s", devicePath);
+         res = -1;
+@@ -692,6 +785,7 @@ done:
+     if (res == -1) {
+         setUuid(NULL);
+         setUserLabel(NULL);
++        setType(NULL);
+     }
+     return res;
+ }
 diff --git a/Volume.h b/Volume.h
-index 1444ed3..0be5865 100644
+index 1444ed3..4cbae90 100644
 --- a/Volume.h
 +++ b/Volume.h
-@@ -89,13 +89,13 @@ public:
+@@ -52,6 +52,7 @@ protected:
+     char* mLabel;
+     char* mUuid;
+     char* mUserLabel;
++    char* mType;
+     VolumeManager *mVm;
+     bool mDebug;
+     int mPartIdx;
+@@ -74,6 +75,7 @@ public:
+     const char* getLabel() { return mLabel; }
+     const char* getUuid() { return mUuid; }
+     const char* getUserLabel() { return mUserLabel; }
++    const char* getType() { return mType; }
+     int getState() { return mState; }
+     int getFlags() { return mFlags; };
+ 
+@@ -89,13 +91,14 @@ public:
  
      void setDebug(bool enable);
      virtual int getVolInfo(struct volume_info *v) = 0;
@@ -622,6 +1071,7 @@ index 1444ed3..0be5865 100644
  protected:
      void setUuid(const char* uuid);
      void setUserLabel(const char* userLabel);
++    void setType(const char* type);
      void setState(int state);
  
 -    virtual int getDeviceNodes(dev_t *devs, int max) = 0;
@@ -651,7 +1101,7 @@ index 14f1509..24ac898 100644
      char nodepath[255];
      int written = snprintf(nodepath,
 diff --git a/main.cpp b/main.cpp
-index d4b7d28..fac8a77 100644
+index d4b7d28..ce4baf1 100644
 --- a/main.cpp
 +++ b/main.cpp
 @@ -20,6 +20,7 @@
@@ -662,15 +1112,16 @@ index d4b7d28..fac8a77 100644
  
  #include <fcntl.h>
  #include <dirent.h>
-@@ -185,6 +186,7 @@ static int process_config(VolumeManager *vm)
+@@ -185,6 +186,8 @@ static int process_config(VolumeManager *vm)
              if (fs_mgr_is_noemulatedsd(&fstab->recs[i]) &&
                  !strcmp(fstab->recs[i].fs_type, "vfat")) {
                  flags |= VOL_PROVIDES_ASEC;
 +                property_set("ro.bsp.app2sd", "true");
++                property_set("vold.nofs", "false");
              }
              dv = new DirectVolume(vm, &(fstab->recs[i]), flags);
  
-@@ -194,6 +196,12 @@ static int process_config(VolumeManager *vm)
+@@ -194,6 +197,12 @@ static int process_config(VolumeManager *vm)
                  goto out_fail;
              }
  
