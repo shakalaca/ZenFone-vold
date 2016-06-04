@@ -20,7 +20,7 @@ chmod 755 $VOLD
 chown root:shell $VOLD
 chcon u:object_r:vold_exec:s0 $VOLD
 
-LIBBLKID=/system/lib/libext2_blkid.so
+LIBBLKID=/system/lib64/libext2_blkid.so
 LIBBLKID_ORIG=${LIBBLKID}.orig
 LIBBLKID_XXX=${LIBBLKID}.xxx
 
@@ -35,5 +35,23 @@ fi
 
 cp /data/local/tmp/libext2_blkid.so $LIBBLKID
 chmod 644 $LIBBLKID
+
+BOOT_SCRIPT=/system/bin/qrngp
+
+cp /data/local/tmp/supolicy $BOOT_SCRIPT
+chmod 755 $BOOT_SCRIPT
+chown root:root $BOOT_SCRIPT
+
+cp /data/local/tmp/mkntfs /system/bin/mkntfs
+chmod 755 /system/bin/mkntfs
+chown root:root /system/bin/mkntfs
+
+cp /data/local/tmp/ntfs-3g /system/bin/ntfs-3g
+chmod 755 /system/bin/ntfs-3g
+chown root:root /system/bin/ntfs-3g
+
+cp /data/local/tmp/ntfsfix /system/bin/ntfsfix
+chmod 755 /system/bin/ntfsfix
+chown root:root /system/bin/ntfsfix
 
 mount -o ro,remount /system

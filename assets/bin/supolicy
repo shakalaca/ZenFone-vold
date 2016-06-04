@@ -1,0 +1,11 @@
+#!/system/bin/sh
+
+# for NTFS-3G
+supolicy --live "allow vold vold capability { setgid setuid }"
+supolicy --live "allow vold fuse_device chr_file { getattr read write open }"
+supolicy --live "allow vold unlabeled filesystem { mount unmount }"
+supolicy --live "allow sdcardd unlabeled filesystem { getattr }"
+supolicy --live "allow sdcardd unlabeled dir { open add_name search getattr setattr read write }"
+supolicy --live "allow sdcardd unlabeled file { read write open }"
+supolicy --live "allow unlabeled unlabeled filesystem { associate }"
+
